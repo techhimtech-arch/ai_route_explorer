@@ -93,6 +93,9 @@ if st.button("🔍 Search Route & Places", type="primary"):
                 logger.error("Source geocoding failed for %s", source)
                 st.stop()
             
+            # Verify source location
+            st.markdown(f"✓ **Source:** {source_data['full_name']} (Lat: {source_data['latitude']:.4f}, Lon: {source_data['longitude']:.4f})")
+            
             # Step 2: Geocode destination location
             st.info("Step 2: Finding destination location...")
             logger.info("Step 2 started: geocoding destination=%s", destination)
@@ -101,6 +104,23 @@ if st.button("🔍 Search Route & Places", type="primary"):
             if not dest_data:
                 st.error(f"❌ Could not find location: {destination}")
                 logger.error("Destination geocoding failed for %s", destination)
+                st.stop()
+            
+            # Verify destination location
+            st.markdown(f"✓ **Destination:** {dest_data['full_name']} (Lat: {dest_data['latitude']:.4f}, Lon: {dest_data['longitude']:.4f})")
+            
+            # Check if locations are too far apart (likely wrong geocoding)
+            lat_diff = abs(source_data['latitude'] - dest_data['latitude'])
+            lon_diff = abs(source_data['longitude'] - dest_data['longitude'])
+            
+            if lat_diff > 20 or lon_diff > 20:
+                st.warning(
+                    f"⚠️ **Locations are very far apart** (Lat diff: {lat_diff:.1f}°, Lon diff: {lon_diff:.1f}°)\n\n"
+                    f"This might be a geocoding issue. Try:\n"
+                    f"- Adding country/state names: 'Una, Himachal Pradesh, India'\n"
+                    f"- Being more specific with location names"
+                )
+                logger.warning("Locations are very far apart: lat_diff=%s lon_diff=%s", lat_diff, lon_diff)
                 st.stop()
             
             # Step 3: Get route between locations
@@ -214,3 +234,46 @@ st.sidebar.markdown("""
 
 **Note:** MVP version with placeholder search. Production version will include real APIs.
 """)
+
+# ==================== AI Demo Section ====================
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 AI Query Demo")
+st.sidebar.markdown("**Test Ollama AI independently** (no routing needed)")
+
+demo_source = st.sidebar.text_input("Demo - From", placeholder="e.g., Shimla")
+demo_dest = st.sidebar.text_input("Demo - To", placeholder="e.g., Una")
+demo_query = st.sidebar.text_input("Demo - Find", placeholder="e.g., pots manufacture")
+
+if st.sidebar.button("🧠 Generate AI Queries", type="secondary"):
+    if not demo_source or not demo_dest or not demo_query:
+        st.sidebar.error("❌ Fill all demo fields")
+    else:
+        st.sidebar.info("🔄 Generating queries with Ollama AI...")
+        logger.info("AI Demo: generating queries for source=%s dest=%s query=%s", demo_source, demo_dest, demo_query)
+        
+        # Check Ollama connection first
+        ollama_ok = ai_service.check_ollama_connection()
+        st.sidebar.markdown(f"**Ollama Status:** {'✅ Connected' if ollama_ok else '❌ Not Running'}")
+        
+        if ollama_ok:
+            st.sidebar.markdown(f"**Model:** {os.getenv('OLLAMA_MODEL', 'mistral')}")
+        
+        # Generate queries
+        demo_queries = ai_service.generate_search_queries(demo_source, demo_dest, demo_query)
+        
+        st.sidebar.markdown("**Generated Queries:**")
+        for i, q in enumerate(demo_queries, 1):
+            st.sidebar.markdown(f"{i}. {q}")
+            logger.debug("Demo query %s: %s", i, q)
+        
+        st.sidebar.success("✅ AI Query generation works!")
+        st.sidebar.markdown("""
+        ---
+        **What you just saw:**
+        - Ollama read your source, destination, and search term
+        - AI analyzed context and generated 3-5 relevant search queries
+        - These queries would be used to find businesses along your route
+        
+        **This is the AI magic:** It doesn't just hardcode queries,  
+        it understands context and creates useful variations!
+        """)
