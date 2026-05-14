@@ -2,16 +2,19 @@
 AI Service - Handles Ollama integration for intelligent query generation
 """
 
+import logging
 import requests
-import json
 from typing import List, Optional
+
+
+logger = logging.getLogger(__name__)
 
 class AIService:
     """
     Service for generating intelligent search queries using Ollama (local LLM)
     """
     
-    def __init__(self, ollama_url: str = "http://localhost:11434"):
+    def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "mistral"):
         """
         Initialize AIService with Ollama endpoint
         
@@ -19,7 +22,8 @@ class AIService:
             ollama_url: URL where Ollama is running (default: localhost:11434)
         """
         self.ollama_url = ollama_url
-        self.model = "mistral"  # Default model, can be changed
+        self.model = model
+        logger.info("AIService initialized with ollama_url=%s model=%s", ollama_url, model)
         
     def check_ollama_connection(self) -> bool:
         """
@@ -29,9 +33,13 @@ class AIService:
             True if Ollama is accessible, False otherwise
         """
         try:
+            logger.info("Checking Ollama connection")
             response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
-            return response.status_code == 200
-        except:
+            connected = response.status_code == 200
+            logger.info("Ollama connection status=%s", connected)
+            return connected
+        except Exception:
+            logger.exception("Ollama connection check failed")
             return False
     
     def generate_search_queries(self, source: str, destination: str, 
@@ -48,6 +56,12 @@ class AIService:
             List of search queries to use for finding businesses
         """
         try:
+            logger.info(
+                "Generating search queries for source=%s destination=%s user_query=%s",
+                source,
+                destination,
+                user_query,
+            )
             prompt = f"""You are a helpful assistant that generates search queries for finding businesses along a route.
 
 Source: {source}
@@ -76,6 +90,7 @@ Example:
             if response.status_code == 200:
                 result = response.json()
                 text = result.get("response", "")
+                logger.debug("Raw Ollama response: %s", text)
                 
                 # Parse queries from response
                 queries = []
@@ -88,12 +103,14 @@ Example:
                         if line:
                             queries.append(line)
                 
+                logger.info("Parsed %s query(ies) from Ollama", len(queries))
                 return queries if queries else [user_query]
             
+            logger.warning("Ollama returned status code %s", response.status_code)
             return [user_query]
             
         except Exception as e:
-            print(f"Error generating queries with Ollama: {e}")
+            logger.exception("Error generating queries with Ollama")
             # Fallback to simple query generation
             return self._fallback_queries(user_query, source, destination)
     
@@ -109,6 +126,7 @@ Example:
         Returns:
             List of simple search queries
         """
+        logger.info("Using fallback query generation")
         return [
             query,
             f"{query} near {source}",

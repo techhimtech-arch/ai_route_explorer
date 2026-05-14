@@ -2,7 +2,11 @@
 Search Service - Handles web search for finding businesses and places
 """
 
+import logging
 from typing import List, Dict, Optional
+
+
+logger = logging.getLogger(__name__)
 
 class SearchService:
     """
@@ -28,6 +32,7 @@ class SearchService:
             List of search results
         """
         try:
+            logger.info("Searching places with query=%s location=%s", query, location)
             # MVP: Return placeholder results
             # Later: Integrate with Tavily API, Google Places API, or web scraping
             
@@ -48,10 +53,11 @@ class SearchService:
                 }
             ]
             
+            logger.info("Returning %s placeholder result(s)", len(results))
             return results
             
         except Exception as e:
-            print(f"Error searching places: {e}")
+            logger.exception("Error searching places")
             return []
     
     def search_multiple_queries(self, queries: List[str], location: str) -> Dict:
@@ -65,10 +71,12 @@ class SearchService:
         Returns:
             Dict with aggregated results
         """
+        logger.info("Running multiple searches: %s query(ies) for location=%s", len(queries), location)
         all_results = {}
         
         for query in queries:
             results = self.search_places(query, location)
             all_results[query] = results
+        logger.info("Completed multi-query search")
         
         return all_results
