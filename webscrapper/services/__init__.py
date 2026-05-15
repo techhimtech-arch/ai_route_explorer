@@ -1,6 +1,8 @@
-# Services module
-from .route_service import RouteService
-from .ai_service import AIService
-from .search_service import SearchService
+"""
+Services package - Business logic for school scanning and analysis
+"""
 
-__all__ = ["RouteService", "AIService", "SearchService"]
+from .scoring_service import ScoringService, ScoreBreakdown
+from .export_service import ExportService
+
+__all__ = ['ScoringService', 'ScoreBreakdown', 'ExportService']

@@ -1,333 +1,436 @@
 """
-AI Route Explorer - Main Streamlit Application
-Finds businesses and places along your route
+School Digital Gap Scanner
+AI-powered lead generation tool for website development services
+Identifies schools with poor/no digital presence and generates business leads
 """
 
 import logging
 import streamlit as st
 import os
 from dotenv import load_dotenv
-from services import RouteService, AIService, SearchService
-from utils import format_distance, format_duration
-from utils.logging_config import setup_logging
+from datetime import datetime
 
-# Load environment variables from .env file
-load_dotenv()
+# Import services and utilities
+from scrapers import SchoolScraper, WebsiteAnalyzer
+from services.scoring_service import ScoringService
+from services.export_service import ExportService
+from utils.logging_config import setup_logging
+from utils import helpers
 
 # ==================== Configuration ====================
-# Logging configuration
+load_dotenv()
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 setup_logging(LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# API Key from environment
-API_KEY = os.getenv("OPENROUTE_API_KEY")
-if not API_KEY:
-    st.error("❌ OPENROUTE_API_KEY not found in .env file")
-    st.stop()
-
-logger.info("Application starting")
-logger.info(
-    "Configuration loaded: LOG_LEVEL=%s, OLLAMA_URL=%s, OLLAMA_MODEL=%s, OPENROUTE_API_KEY=%s",
-    LOG_LEVEL,
-    os.getenv("OLLAMA_URL", "http://localhost:11434"),
-    os.getenv("OLLAMA_MODEL", "mistral"),
-    "set" if API_KEY else "missing",
-)
-
-# Initialize services
-route_service = RouteService(API_KEY)
-ai_service = AIService(
-    ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-    model=os.getenv("OLLAMA_MODEL", "mistral"),
-)
-search_service = SearchService()
-logger.info("Services initialized")
+logger.info("School Digital Gap Scanner starting")
 
 # ==================== Page Configuration ====================
 st.set_page_config(
-    page_title="AI Route Explorer",
-    page_icon="🗺️",
-    layout="wide"
+    page_title="School Digital Gap Scanner",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ==================== UI Layout ====================
-st.title("🗺️ AI Route Explorer")
-st.markdown("Find businesses and places along your route powered by AI")
+# Custom CSS
+st.markdown("""
+    <style>
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .gap-type-hot {
+        background-color: #ffe0e0;
+        padding: 10px;
+        border-left: 4px solid #ff4444;
+    }
+    .gap-type-warm {
+        background-color: #fff5e0;
+        padding: 10px;
+        border-left: 4px solid #ffaa00;
+    }
+    .gap-type-cool {
+        background-color: #e0f2ff;
+        padding: 10px;
+        border-left: 4px solid #0088ff;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-with st.sidebar.expander("Debug info", expanded=False):
-    st.write(f"Log level: {LOG_LEVEL}")
-    st.write(f"OpenRouteService key: {'set' if API_KEY else 'missing'}")
-    st.write(f"Ollama URL: {os.getenv('OLLAMA_URL', 'http://localhost:11434')}")
-    st.write(f"Ollama model: {os.getenv('OLLAMA_MODEL', 'mistral')}")
+# ==================== Session State ====================
+if 'scan_complete' not in st.session_state:
+    st.session_state.scan_complete = False
+    st.session_state.results = None
+    st.session_state.schools = None
 
-# ==================== Input Section ====================
-st.markdown("### 📍 Enter Your Route Details")
-col1, col2, col3 = st.columns(3)
+# ==================== Sidebar ====================
+with st.sidebar:
+    st.title("🎓 Scanner Configuration")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        city = st.text_input("City", placeholder="e.g., New York")
+    with col2:
+        state = st.text_input("State", placeholder="e.g., NY")
+    
+    num_schools = st.slider(
+        "Schools to scan",
+        min_value=5,
+        max_value=100,
+        value=20,
+        step=5
+    )
+    
+    st.divider()
+    st.subheader("Scan Settings")
+    
+    timeout = st.slider(
+        "Website timeout (seconds)",
+        min_value=5,
+        max_value=30,
+        value=10
+    )
+    
+    rate_limit = st.slider(
+        "Rate limit delay (seconds)",
+        min_value=0.5,
+        max_value=3.0,
+        value=1.0,
+        step=0.5
+    )
+    
+    check_ssl = st.checkbox("Check SSL", value=True)
+    check_mobile = st.checkbox("Check Mobile Friendly", value=True)
+    check_links = st.checkbox("Check Broken Links", value=False)
+    
+    st.divider()
+    
+    # Start scanning button
+    if st.button("🔍 Start Scanning", use_container_width=True, type="primary"):
+        if not city or not state:
+            st.error("❌ Please enter both city and state")
+        else:
+            st.session_state.scan_complete = False
+            st.session_state.results = None
+            st.session_state.schools = None
 
-with col1:
-    source = st.text_input("From", placeholder="e.g., Shimla")
-
-with col2:
-    destination = st.text_input("To", placeholder="e.g., Paonta Sahib")
-
-with col3:
-    search_query = st.text_input("What to find", placeholder="e.g., plant nurseries")
-
-# ==================== Search Button & Processing ====================
-if st.button("🔍 Search Route & Places", type="primary"):
-    logger.info("Search requested: source=%s destination=%s query=%s", source, destination, search_query)
-    if not source or not destination or not search_query:
-        st.error("❌ Please fill in all fields")
-        logger.warning("Validation failed because one or more fields were empty")
-    else:
-        with st.spinner("Processing your route..."):
-            
-            # Step 1: Geocode source location
-            st.info("Step 1: Finding source location...")
-            logger.info("Step 1 started: geocoding source=%s", source)
-            source_data = route_service.geocode_location(source)
-            
-            if not source_data:
-                st.error(f"❌ Could not find location: {source}")
-                logger.error("Source geocoding failed for %s", source)
-                st.stop()
-            
-            # Verify source location
-            st.markdown(f"✓ **Source:** {source_data['full_name']} (Lat: {source_data['latitude']:.4f}, Lon: {source_data['longitude']:.4f})")
-            
-            # Step 2: Geocode destination location
-            st.info("Step 2: Finding destination location...")
-            logger.info("Step 2 started: geocoding destination=%s", destination)
-            dest_data = route_service.geocode_location(destination)
-            
-            if not dest_data:
-                st.error(f"❌ Could not find location: {destination}")
-                logger.error("Destination geocoding failed for %s", destination)
-                st.stop()
-            
-            # Verify destination location
-            st.markdown(f"✓ **Destination:** {dest_data['full_name']} (Lat: {dest_data['latitude']:.4f}, Lon: {dest_data['longitude']:.4f})")
-            
-            # Check if locations are too far apart (likely wrong geocoding)
-            lat_diff = abs(source_data['latitude'] - dest_data['latitude'])
-            lon_diff = abs(source_data['longitude'] - dest_data['longitude'])
-            
-            if lat_diff > 20 or lon_diff > 20:
-                st.warning(
-                    f"⚠️ **Locations are very far apart** (Lat diff: {lat_diff:.1f}°, Lon diff: {lon_diff:.1f}°)\n\n"
-                    f"This might be a geocoding issue. Try:\n"
-                    f"- Adding country/state names: 'Una, Himachal Pradesh, India'\n"
-                    f"- Being more specific with location names"
-                )
-                logger.warning("Locations are very far apart: lat_diff=%s lon_diff=%s", lat_diff, lon_diff)
-                st.stop()
-            
-            # Step 3: Get route between locations
-            st.info("Step 3: Calculating route...")
-            source_coords = (source_data["longitude"], source_data["latitude"])
-            dest_coords = (dest_data["longitude"], dest_data["latitude"])
-            logger.info("Step 3 started: route requested between source_coords=%s and dest_coords=%s", source_coords, dest_coords)
-            
-            route_data = route_service.get_route(source_coords, dest_coords)
-            
-            if not route_data:
-                st.warning("⚠️ Could not calculate route (API issue)")
-                logger.error("Route calculation failed for source=%s destination=%s", source, destination)
-                # Continue anyway - show AI queries and search results
-                route_data = None
-                waypoints = []
-            else:
-                # Step 4: Extract towns along the route
-                st.info("Step 4: Extracting towns along the route...")
-                logger.info("Step 4 started: extracting waypoints from route geometry")
-                waypoints = route_service.extract_towns_from_route(route_data.get("geometry", {}))
-            
-            # Step 5: Generate intelligent search queries (ALWAYS DO THIS)
-            st.info("Step 5: Generating search queries with AI...")
-            ollama_connected = ai_service.check_ollama_connection()
-            logger.info("Ollama connection status before query generation: %s", ollama_connected)
-            search_queries = ai_service.generate_search_queries(source, destination, search_query)
-            logger.info("AI generated %s search queries", len(search_queries))
-            
-            # ==================== Display Results ====================
-            if route_data:
-                st.success("✅ Route analysis complete!")
-            else:
-                st.success("✅ Search analysis complete! (Route API unavailable)")
-            
-            logger.info(
-                "Search completed successfully: distance=%s duration=%s waypoints=%s queries=%s",
-                route_data.get("distance", 0) if route_data else 0,
-                route_data.get("duration", 0) if route_data else 0,
-                len(waypoints),
-                len(search_queries),
-            )
-            
-            # Route Summary (only if route available)
-            if route_data:
-                st.markdown("### 📊 Route Summary")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    distance = route_data.get("distance", 0)
-                    st.metric("Distance", format_distance(distance))
-                
-                with col2:
-                    duration = route_data.get("duration", 0)
-                    st.metric("Duration", format_duration(duration))
-                
-                with col3:
-                    st.metric("Waypoints", len(waypoints))
-                
-                # Route Details
-                st.markdown("### 📍 Location Details")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**From:** {source_data['full_name']}")
-                    st.write(f"Coordinates: {source_data['latitude']:.4f}, {source_data['longitude']:.4f}")
-                
-                with col2:
-                    st.write(f"**To:** {dest_data['full_name']}")
-                    st.write(f"Coordinates: {dest_data['latitude']:.4f}, {dest_data['longitude']:.4f}")
-            else:
-                # Show location details even without route
-                st.markdown("### 📍 Location Details")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**From:** {source_data['full_name']}")
-                    st.write(f"Coordinates: {source_data['latitude']:.4f}, {source_data['longitude']:.4f}")
-                
-                with col2:
-                    st.write(f"**To:** {dest_data['full_name']}")
-                    st.write(f"Coordinates: {dest_data['latitude']:.4f}, {dest_data['longitude']:.4f}")
-            
-            # AI Generated Search Queries
-            st.markdown("### 🤖 AI-Generated Search Queries")
-            for i, query in enumerate(search_queries, 1):
-                st.write(f"{i}. {query}")
-                logger.debug("Search query %s: %s", i, query)
-            
-            # Search Results
-            st.markdown("### 🏪 Search Results")
-            
-            if waypoints:
-                st.info("**Displaying results for each waypoint along the route:**")
-                
-                # Show results for each waypoint
-                for idx, waypoint in enumerate(waypoints[:3], 1):  # Show first 3 waypoints
-                    with st.expander(f"📍 Waypoint {idx} Results"):
-                        logger.debug("Rendering results for waypoint %s: %s", idx, waypoint)
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write(f"**Latitude:** {waypoint['latitude']:.4f}")
-                            st.write(f"**Longitude:** {waypoint['longitude']:.4f}")
-                        
-                        with col2:
-                            # Run searches for each query at this waypoint
-                            for query in search_queries[:2]:  # Show 2 queries per waypoint
-                                logger.info("Running search: waypoint=%s query=%s", idx, query)
-                                results = search_service.search_places(query, f"Waypoint {idx}")
-                                if results:
-                                    st.write(f"**{query}:**")
-                                    for result in results:
-                                        rating = result.get('rating', 0)
-                                        source = result.get('source', 'unknown')
-                                        st.write(f"- {result['name']}")
-                                        st.write(f"  ⭐ {rating:.1f} | Source: {source}")
-                                        if result.get('phone'):
-                                            st.write(f"  ☎️ {result['phone']}")
-                                        if result.get('url') and result['url'] != '#':
-                                            st.write(f"  🔗 {result['url']}")
-            else:
-                st.info("**Displaying results for your search (no route available):**")
-                
-                # Show results for each AI-generated query
-                for idx, query in enumerate(search_queries, 1):
-                    with st.expander(f"🔍 Query {idx}: {query}"):
-                        logger.info("Running search: query=%s location=%s-%s", query, source, destination)
-                        results = search_service.search_places(query, f"{source} to {destination}")
-                        if results:
-                            for result in results:
-                                rating = result.get('rating', 0)
-                                source_api = result.get('source', 'unknown')
-                                st.write(f"**{result['name']}**")
-                                st.write(f"  📍 Location: {result.get('location', 'N/A')}")
-                                st.write(f"  ⭐ Rating: {rating:.1f}")
-                                st.write(f"  🏷️ Type: {result.get('type', 'N/A')}")
-                                st.write(f"  📌 Source: {source_api}")
-                                if result.get('phone'):
-                                    st.write(f"  ☎️ Phone: {result['phone']}")
-                                if 'snippet' in result:
-                                    st.write(f"  📄 Info: {result['snippet']}")
-                                if result.get('url') and result['url'] != '#':
-                                    st.write(f"  🔗 {result['url']}")
-                                st.divider()
-                        else:
-                            st.write("No results found for this query.")
-
-# ==================== Sidebar Info ====================
-st.sidebar.markdown("### ℹ️ About")
-st.sidebar.markdown("""
-**AI Route Explorer** helps you find businesses and places along your journey.
-
-**Features:**
-- 🗺️ Route optimization
-- 🤖 AI-powered query generation
-- 🏪 Business discovery
-- 📍 Location extraction
-
-**Tech Stack:**
-- Streamlit (Frontend)
-- OpenRouteService API (Routing)
-- Ollama (AI)
-- Python (Backend)
-
-**Note:** If Tavily is not configured, the app falls back to public web search and only uses mock data as a last resort. Phone numbers are shown only when the source page exposes them.
+# ==================== Main Content ====================
+st.title("🎓 School Digital Gap Scanner")
+st.markdown("""
+    **Find schools with poor digital presence and generate business leads**
+    
+    This tool identifies schools that either:
+    - ❌ Don't have a website
+    - 🔗 Have broken or inaccessible websites
+    - 🔒 Lack security (no SSL)
+    - 📱 Are not mobile-friendly
+    - 📅 Have outdated designs
+    
+    **Perfect for**: Web development agencies, SEO services, and digital marketing firms
 """)
 
-# ==================== AI Demo Section ====================
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🤖 AI Query Demo")
-st.sidebar.markdown("**Test Ollama AI independently** (no routing needed)")
+# ==================== Execute Scan ====================
+if st.button("🔍 Start Scanning", use_container_width=True, type="primary") or (
+    'city' in locals() and 'state' in locals() and city and state and not st.session_state.scan_complete
+):
+    if city and state:
+        with st.spinner(f"🔎 Scanning schools in {city}, {state}..."):
+            try:
+                # Initialize services
+                scraper = SchoolScraper(rate_limit_delay=rate_limit)
+                analyzer = WebsiteAnalyzer(timeout=timeout)
+                scorer = ScoringService()
+                
+                logger.info("Scan started for %s, %s", city, state)
+                
+                # Search for schools
+                st.info("📍 Discovering schools...")
+                schools = scraper.search_schools_by_city_state(city, state, num_schools)
+                st.session_state.schools = schools
+                
+                if not schools:
+                    st.warning("⚠️  No schools found for this location")
+                    logger.warning("No schools found for %s, %s", city, state)
+                else:
+                    st.success(f"Found {len(schools)} schools")
+                    
+                    # Analyze websites
+                    st.info("🌐 Analyzing websites...")
+                    progress_bar = st.progress(0)
+                    
+                    analyses = []
+                    for idx, school in enumerate(schools):
+                        url = school.get('website')
+                        analysis = analyzer.analyze(url)
+                        analyses.append(analysis)
+                        
+                        progress = (idx + 1) / len(schools)
+                        progress_bar.progress(progress)
+                    
+                    st.success("✅ Website analysis complete")
+                    
+                    # Score schools
+                    st.info("📊 Calculating digital quality scores...")
+                    scores = scorer.batch_score_schools(schools, analyses)
+                    st.session_state.results = scores
+                    st.session_state.scan_complete = True
+                    st.success("✅ Scoring complete")
+                    
+                    logger.info("Scan completed: %d schools analyzed", len(schools))
+                
+                # Clean up
+                scraper.close()
+                analyzer.close()
+            
+            except Exception as e:
+                st.error(f"❌ Error during scan: {str(e)}")
+                logger.exception("Error during scan")
 
-demo_source = st.sidebar.text_input("Demo - From", placeholder="e.g., Shimla")
-demo_dest = st.sidebar.text_input("Demo - To", placeholder="e.g., Una")
-demo_query = st.sidebar.text_input("Demo - Find", placeholder="e.g., pots manufacture")
+# ==================== Display Results ====================
+if st.session_state.scan_complete and st.session_state.results:
+    results = st.session_state.results
+    schools = st.session_state.schools
+    
+    st.divider()
+    st.header("📊 Scan Results")
+    
+    # Summary Statistics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total_schools = len(results)
+    avg_score = sum(r['total_score'] for r in results) / max(total_schools, 1)
+    
+    # Count gap types
+    no_website = sum(1 for r in results if r['gap_type'] == 'No Digital Presence')
+    broken = sum(1 for r in results if r['gap_type'] == 'Broken Website')
+    outdated = sum(1 for r in results if r['gap_type'] == 'Outdated Design')
+    leads = no_website + broken + outdated
+    
+    with col1:
+        st.metric("Total Schools", total_schools, "analyzed")
+    
+    with col2:
+        st.metric("Avg Score", f"{avg_score:.1f}/100", "digital quality")
+    
+    with col3:
+        st.metric("🔴 No Website", no_website, "critical gap")
+    
+    with col4:
+        st.metric("💼 Sales Leads", leads, f"{(leads/total_schools*100):.0f}%")
+    
+    st.divider()
+    
+    # Tabs for different views
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📋 All Schools", "🔥 Hot Leads", "📊 Statistics", "💾 Export"]
+    )
+    
+    # ==================== TAB 1: All Schools ====================
+    with tab1:
+        st.subheader("Complete School List")
+        
+        # Display as sortable dataframe
+        display_data = []
+        for score in results:
+            display_data.append({
+                'School': score['school_name'],
+                'Website': score['website_url'] or 'No Website',
+                'Status': score['status'],
+                'Score': score['total_score'],
+                'Grade': score['grade'],
+                'Gap Type': score['gap_type'],
+            })
+        
+        st.dataframe(
+            display_data,
+            use_container_width=True,
+            column_config={
+                "Score": st.column_config.NumberColumn(format="%.1f"),
+            }
+        )
+    
+    # ==================== TAB 2: Hot Leads ====================
+    with tab2:
+        st.subheader("🔥 High-Priority Sales Leads")
+        
+        leads_list = [r for r in results if r['gap_type'] in [
+            'No Digital Presence', 'Broken Website', 'Outdated Design'
+        ]]
+        
+        if not leads_list:
+            st.info("No high-priority leads found in this scan")
+        else:
+            st.success(f"Found {len(leads_list)} promising sales opportunities")
+            
+            for lead in sorted(leads_list, key=lambda x: x['total_score']):
+                with st.expander(
+                    f"{helpers.get_gap_type_icon(lead['gap_type'])} {lead['school_name']} - Score: {lead['total_score']:.0f}",
+                    expanded=False
+                ):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Website:** {lead['website_url'] or 'No Website'}")
+                        st.write(f"**Grade:** {lead['grade']}")
+                        st.write(f"**Gap Type:** {lead['gap_type']}")
+                    
+                    with col2:
+                        st.write(f"**Status:** {lead['status']}")
+                        st.write(f"**Digital Score:** {lead['total_score']:.1f}/100")
+                    
+                    st.write("**Key Issues:**")
+                    for issue in lead['key_issues']:
+                        st.write(f"  • {issue}")
+                    
+                    st.write("**Recommendations:**")
+                    for rec in lead['recommendations']:
+                        st.write(f"  • {rec}")
+    
+    # ==================== TAB 3: Statistics ====================
+    with tab3:
+        st.subheader("📊 Analysis Statistics")
+        
+        col1, col2 = st.columns(2)
+        
+        # Grade distribution
+        with col1:
+            st.write("**Score Distribution**")
+            grade_counts = {}
+            for r in results:
+                grade = r['grade']
+                grade_counts[grade] = grade_counts.get(grade, 0) + 1
+            
+            grade_data = [
+                {"Grade": "A (85-100)", "Count": grade_counts.get('A', 0)},
+                {"Grade": "B (75-84)", "Count": grade_counts.get('B', 0)},
+                {"Grade": "C (65-74)", "Count": grade_counts.get('C', 0)},
+                {"Grade": "D (50-64)", "Count": grade_counts.get('D', 0)},
+                {"Grade": "F (<50)", "Count": grade_counts.get('F', 0)},
+            ]
+            
+            st.bar_chart([d["Count"] for d in grade_data], use_container_width=True)
+        
+        # Gap types
+        with col2:
+            st.write("**Digital Gaps Identified**")
+            gap_counts = {}
+            for r in results:
+                gap = r['gap_type']
+                gap_counts[gap] = gap_counts.get(gap, 0) + 1
+            
+            gap_df = st.dataframe(
+                [{"Gap Type": k, "Count": v} for k, v in gap_counts.items()],
+                use_container_width=True,
+                hide_index=True
+            )
+        
+        st.divider()
+        
+        # Feature presence
+        st.write("**Feature Presence Across All Schools**")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        has_website = sum(1 for r in results if r['website_url'])
+        has_ssl = sum(1 for r in results if r['breakdown'].get('ssl_security', 0) > 0)
+        is_mobile = sum(1 for r in results if r['breakdown'].get('mobile_friendly', 0) > 0)
+        has_contact = sum(1 for r in results if r['breakdown'].get('contact_info', 0) > 0)
+        
+        with col1:
+            pct = (has_website / max(total_schools, 1)) * 100
+            st.metric("Has Website", f"{has_website}/{total_schools}", f"{pct:.0f}%")
+        
+        with col2:
+            pct = (has_ssl / max(total_schools, 1)) * 100
+            st.metric("Has SSL", f"{has_ssl}/{total_schools}", f"{pct:.0f}%")
+        
+        with col3:
+            pct = (is_mobile / max(total_schools, 1)) * 100
+            st.metric("Mobile Friendly", f"{is_mobile}/{total_schools}", f"{pct:.0f}%")
+        
+        with col4:
+            pct = (has_contact / max(total_schools, 1)) * 100
+            st.metric("Has Contact Info", f"{has_contact}/{total_schools}", f"{pct:.0f}%")
+    
+    # ==================== TAB 4: Export ====================
+    with tab4:
+        st.subheader("💾 Export Results")
+        
+        exporter = ExportService()
+        
+        col1, col2, col3 = st.columns(3)
+        
+        # Export all results
+        with col1:
+            if st.button("📥 Export All Schools (CSV)", use_container_width=True):
+                try:
+                    filepath = exporter.export_to_csv(results)
+                    st.success(f"✅ Exported to {filepath}")
+                    
+                    with open(filepath, 'r') as f:
+                        st.download_button(
+                            label="⬇️ Download CSV",
+                            data=f.read(),
+                            file_name=os.path.basename(filepath),
+                            mime="text/csv"
+                        )
+                except Exception as e:
+                    st.error(f"Error exporting: {str(e)}")
+        
+        # Export leads only
+        with col2:
+            if st.button("🔥 Export Leads Only (CSV)", use_container_width=True):
+                try:
+                    filepath = exporter.export_to_leads_csv(results)
+                    st.success(f"✅ Leads exported to {filepath}")
+                    
+                    with open(filepath, 'r') as f:
+                        st.download_button(
+                            label="⬇️ Download Leads",
+                            data=f.read(),
+                            file_name=os.path.basename(filepath),
+                            mime="text/csv"
+                        )
+                except Exception as e:
+                    st.error(f"Error exporting leads: {str(e)}")
+        
+        # Export summary report
+        with col3:
+            if st.button("📊 Generate Summary Report", use_container_width=True):
+                try:
+                    filepath = exporter.export_summary_report(results, city, state)
+                    st.success(f"✅ Report generated: {filepath}")
+                    
+                    with open(filepath, 'r') as f:
+                        st.download_button(
+                            label="⬇️ Download Report",
+                            data=f.read(),
+                            file_name=os.path.basename(filepath),
+                            mime="text/plain"
+                        )
+                except Exception as e:
+                    st.error(f"Error generating report: {str(e)}")
 
-if st.sidebar.button("🧠 Generate AI Queries", type="secondary"):
-    if not demo_source or not demo_dest or not demo_query:
-        st.sidebar.error("❌ Fill all demo fields")
-    else:
-        st.sidebar.info("🔄 Generating queries with Ollama AI...")
-        logger.info("AI Demo: generating queries for source=%s dest=%s query=%s", demo_source, demo_dest, demo_query)
-        
-        # Check Ollama connection first
-        ollama_ok = ai_service.check_ollama_connection()
-        st.sidebar.markdown(f"**Ollama Status:** {'✅ Connected' if ollama_ok else '❌ Not Running'}")
-        
-        if ollama_ok:
-            st.sidebar.markdown(f"**Model:** {os.getenv('OLLAMA_MODEL', 'mistral')}")
-        
-        # Generate queries
-        demo_queries = ai_service.generate_search_queries(demo_source, demo_dest, demo_query)
-        
-        st.sidebar.markdown("**Generated Queries:**")
-        for i, q in enumerate(demo_queries, 1):
-            st.sidebar.markdown(f"{i}. {q}")
-            logger.debug("Demo query %s: %s", i, q)
-        
-        st.sidebar.success("✅ AI Query generation works!")
-        st.sidebar.markdown("""
-        ---
-        **What you just saw:**
-        - Ollama read your source, destination, and search term
-        - AI analyzed context and generated 3-5 relevant search queries
-        - These queries would be used to find businesses along your route
-        
-        **This is the AI magic:** It doesn't just hardcode queries,  
-        it understands context and creates useful variations!
-        """)
+else:
+    # Show home screen
+    st.info("👈 Use the sidebar to configure your scan and start searching for schools")
+
+# ==================== Footer ====================
+st.divider()
+st.markdown("""
+    ---
+    **School Digital Gap Scanner** v1.0  
+    Generate high-quality business leads for website development services
+    
+    💡 **How to use:**
+    1. Enter city and state in the sidebar
+    2. Adjust scan settings (optional)
+    3. Click "Start Scanning"
+    4. Review results and export leads
+    
+    📧 **Contact:** For API support or bulk scanning, contact our team
+""")
+
+logger.info("App session ended")
