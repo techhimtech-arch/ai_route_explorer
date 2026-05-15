@@ -132,16 +132,18 @@ if st.button("🔍 Search Route & Places", type="primary"):
             route_data = route_service.get_route(source_coords, dest_coords)
             
             if not route_data:
-                st.error("❌ Could not find a route between these locations")
+                st.warning("⚠️ Could not calculate route (API issue)")
                 logger.error("Route calculation failed for source=%s destination=%s", source, destination)
-                st.stop()
+                # Continue anyway - show AI queries and search results
+                route_data = None
+                waypoints = []
+            else:
+                # Step 4: Extract towns along the route
+                st.info("Step 4: Extracting towns along the route...")
+                logger.info("Step 4 started: extracting waypoints from route geometry")
+                waypoints = route_service.extract_towns_from_route(route_data.get("geometry", {}))
             
-            # Step 4: Extract towns along the route
-            st.info("Step 4: Extracting towns along the route...")
-            logger.info("Step 4 started: extracting waypoints from route geometry")
-            waypoints = route_service.extract_towns_from_route(route_data.get("geometry", {}))
-            
-            # Step 5: Generate intelligent search queries
+            # Step 5: Generate intelligent search queries (ALWAYS DO THIS)
             st.info("Step 5: Generating search queries with AI...")
             ollama_connected = ai_service.check_ollama_connection()
             logger.info("Ollama connection status before query generation: %s", ollama_connected)
@@ -149,41 +151,58 @@ if st.button("🔍 Search Route & Places", type="primary"):
             logger.info("AI generated %s search queries", len(search_queries))
             
             # ==================== Display Results ====================
-            st.success("✅ Route analysis complete!")
+            if route_data:
+                st.success("✅ Route analysis complete!")
+            else:
+                st.success("✅ Search analysis complete! (Route API unavailable)")
+            
             logger.info(
                 "Search completed successfully: distance=%s duration=%s waypoints=%s queries=%s",
-                route_data.get("distance", 0),
-                route_data.get("duration", 0),
+                route_data.get("distance", 0) if route_data else 0,
+                route_data.get("duration", 0) if route_data else 0,
                 len(waypoints),
                 len(search_queries),
             )
             
-            # Route Summary
-            st.markdown("### 📊 Route Summary")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                distance = route_data.get("distance", 0)
-                st.metric("Distance", format_distance(distance))
-            
-            with col2:
-                duration = route_data.get("duration", 0)
-                st.metric("Duration", format_duration(duration))
-            
-            with col3:
-                st.metric("Waypoints", len(waypoints))
-            
-            # Route Details
-            st.markdown("### 📍 Location Details")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write(f"**From:** {source_data['full_name']}")
-                st.write(f"Coordinates: {source_data['latitude']:.4f}, {source_data['longitude']:.4f}")
-            
-            with col2:
-                st.write(f"**To:** {dest_data['full_name']}")
-                st.write(f"Coordinates: {dest_data['latitude']:.4f}, {dest_data['longitude']:.4f}")
+            # Route Summary (only if route available)
+            if route_data:
+                st.markdown("### 📊 Route Summary")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    distance = route_data.get("distance", 0)
+                    st.metric("Distance", format_distance(distance))
+                
+                with col2:
+                    duration = route_data.get("duration", 0)
+                    st.metric("Duration", format_duration(duration))
+                
+                with col3:
+                    st.metric("Waypoints", len(waypoints))
+                
+                # Route Details
+                st.markdown("### 📍 Location Details")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**From:** {source_data['full_name']}")
+                    st.write(f"Coordinates: {source_data['latitude']:.4f}, {source_data['longitude']:.4f}")
+                
+                with col2:
+                    st.write(f"**To:** {dest_data['full_name']}")
+                    st.write(f"Coordinates: {dest_data['latitude']:.4f}, {dest_data['longitude']:.4f}")
+            else:
+                # Show location details even without route
+                st.markdown("### 📍 Location Details")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**From:** {source_data['full_name']}")
+                    st.write(f"Coordinates: {source_data['latitude']:.4f}, {source_data['longitude']:.4f}")
+                
+                with col2:
+                    st.write(f"**To:** {dest_data['full_name']}")
+                    st.write(f"Coordinates: {dest_data['latitude']:.4f}, {dest_data['longitude']:.4f}")
             
             # AI Generated Search Queries
             st.markdown("### 🤖 AI-Generated Search Queries")
@@ -193,27 +212,62 @@ if st.button("🔍 Search Route & Places", type="primary"):
             
             # Search Results
             st.markdown("### 🏪 Search Results")
-            st.info("**MVP Version:** Displaying sample results. Real search integration coming soon!")
             
-            # Show results for each waypoint
-            for idx, waypoint in enumerate(waypoints[:3], 1):  # Show first 3 waypoints
-                with st.expander(f"📍 Waypoint {idx} Results"):
-                    logger.debug("Rendering results for waypoint %s: %s", idx, waypoint)
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.write(f"**Latitude:** {waypoint['latitude']:.4f}")
-                        st.write(f"**Longitude:** {waypoint['longitude']:.4f}")
-                    
-                    with col2:
-                        # Run searches for each query at this waypoint
-                        for query in search_queries[:2]:  # Show 2 queries per waypoint
-                            logger.info("Running sample search: waypoint=%s query=%s", idx, query)
-                            results = search_service.search_places(query, f"Waypoint {idx}")
-                            if results:
-                                st.write(f"**{query}:**")
-                                for result in results:
-                                    st.write(f"- {result['name']} (Rating: ⭐ {result['rating']})")
+            if waypoints:
+                st.info("**Displaying results for each waypoint along the route:**")
+                
+                # Show results for each waypoint
+                for idx, waypoint in enumerate(waypoints[:3], 1):  # Show first 3 waypoints
+                    with st.expander(f"📍 Waypoint {idx} Results"):
+                        logger.debug("Rendering results for waypoint %s: %s", idx, waypoint)
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Latitude:** {waypoint['latitude']:.4f}")
+                            st.write(f"**Longitude:** {waypoint['longitude']:.4f}")
+                        
+                        with col2:
+                            # Run searches for each query at this waypoint
+                            for query in search_queries[:2]:  # Show 2 queries per waypoint
+                                logger.info("Running search: waypoint=%s query=%s", idx, query)
+                                results = search_service.search_places(query, f"Waypoint {idx}")
+                                if results:
+                                    st.write(f"**{query}:**")
+                                    for result in results:
+                                        rating = result.get('rating', 0)
+                                        source = result.get('source', 'unknown')
+                                        st.write(f"- {result['name']}")
+                                        st.write(f"  ⭐ {rating:.1f} | Source: {source}")
+                                        if result.get('phone'):
+                                            st.write(f"  ☎️ {result['phone']}")
+                                        if result.get('url') and result['url'] != '#':
+                                            st.write(f"  🔗 {result['url']}")
+            else:
+                st.info("**Displaying results for your search (no route available):**")
+                
+                # Show results for each AI-generated query
+                for idx, query in enumerate(search_queries, 1):
+                    with st.expander(f"🔍 Query {idx}: {query}"):
+                        logger.info("Running search: query=%s location=%s-%s", query, source, destination)
+                        results = search_service.search_places(query, f"{source} to {destination}")
+                        if results:
+                            for result in results:
+                                rating = result.get('rating', 0)
+                                source_api = result.get('source', 'unknown')
+                                st.write(f"**{result['name']}**")
+                                st.write(f"  📍 Location: {result.get('location', 'N/A')}")
+                                st.write(f"  ⭐ Rating: {rating:.1f}")
+                                st.write(f"  🏷️ Type: {result.get('type', 'N/A')}")
+                                st.write(f"  📌 Source: {source_api}")
+                                if result.get('phone'):
+                                    st.write(f"  ☎️ Phone: {result['phone']}")
+                                if 'snippet' in result:
+                                    st.write(f"  📄 Info: {result['snippet']}")
+                                if result.get('url') and result['url'] != '#':
+                                    st.write(f"  🔗 {result['url']}")
+                                st.divider()
+                        else:
+                            st.write("No results found for this query.")
 
 # ==================== Sidebar Info ====================
 st.sidebar.markdown("### ℹ️ About")
@@ -232,7 +286,7 @@ st.sidebar.markdown("""
 - Ollama (AI)
 - Python (Backend)
 
-**Note:** MVP version with placeholder search. Production version will include real APIs.
+**Note:** If Tavily is not configured, the app falls back to public web search and only uses mock data as a last resort. Phone numbers are shown only when the source page exposes them.
 """)
 
 # ==================== AI Demo Section ====================
