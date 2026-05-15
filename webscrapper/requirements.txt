@@ -1,0 +1,20 @@
+# Web Framework & UI
+streamlit>=1.28.0
+
+# Web Scraping & Parsing
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Data Handling
+pandas>=2.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-slugify>=8.0.0
+
+# Optional: AI Integration
+ollama>=0.1.0
+
+# Logging & Monitoring
+python-json-logger>=2.0.0

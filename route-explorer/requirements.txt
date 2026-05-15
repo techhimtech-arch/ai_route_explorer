@@ -4,3 +4,5 @@ openrouteservice==2.3.3
 python-dotenv==1.0.0
 ollama
 tavily-python==0.3.4
+beautifulsoup4==4.12.2
+pandas==2.1.3
